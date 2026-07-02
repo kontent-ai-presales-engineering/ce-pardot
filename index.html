@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pardot Form Handler Selector</title>
+
+  <!-- Kontent.ai Custom Element SDK -->
+  <script src="https://app.kontent.ai/js-api/custom-element/v1/custom-element.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 10px 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      font-size: 14px;
+      color: #333;
+      background: transparent;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .select-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    select {
+      flex: 1;
+      padding: 8px 36px 8px 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 14px;
+      background-color: #fff;
+      color: #333;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      cursor: pointer;
+      transition: border-color 0.15s ease;
+    }
+
+    select:focus {
+      outline: none;
+      border-color: #5b4ff5;
+      box-shadow: 0 0 0 2px rgba(91, 79, 245, 0.15);
+    }
+
+    select:disabled {
+      background-color: #f5f5f5;
+      color: #999;
+      cursor: not-allowed;
+      border-color: #ddd;
+    }
+
+    .refresh-btn {
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background: #fff;
+      cursor: pointer;
+      font-size: 16px;
+      color: #555;
+      transition: border-color 0.15s ease, color 0.15s ease;
+      line-height: 1;
+    }
+
+    .refresh-btn:hover:not(:disabled) {
+      border-color: #5b4ff5;
+      color: #5b4ff5;
+    }
+
+    .refresh-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .refresh-btn.spinning {
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .status {
+      font-size: 12px;
+      color: #888;
+      min-height: 16px;
+      line-height: 16px;
+    }
+
+    .status.error { color: #c0392b; }
+    .status.success { color: #27ae60; }
+    .status.loading { color: #888; }
+
+    .selected-info {
+      display: none;
+      padding: 6px 10px;
+      background: #f0eeff;
+      border: 1px solid #d8d4ff;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #5b4ff5;
+      word-break: break-all;
+    }
+
+    .selected-info.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="select-row">
+      <select id="pardot-selector" disabled aria-label="Select a Pardot form handler">
+        <option value="">Initialising...</option>
+      </select>
+      <button class="refresh-btn" id="refresh-btn" disabled title="Refresh list from Pardot" aria-label="Refresh">
+        &#8635;
+      </button>
+    </div>
+    <div class="status loading" id="status">Connecting to Kontent.ai...</div>
+    <div class="selected-info" id="selected-info"></div>
+  </div>
+
+  <script>
+    // ─── DOM refs ────────────────────────────────────────────────────────────
+    const selector    = document.getElementById('pardot-selector');
+    const statusEl    = document.getElementById('status');
+    const refreshBtn  = document.getElementById('refresh-btn');
+    const selectedInfo = document.getElementById('selected-info');
+
+    // ─── State ───────────────────────────────────────────────────────────────
+    let isDisabled    = false;
+    let currentValue  = null;   // the saved JSON string, or null
+    let proxyUrl      = null;   // set from element.config.proxyUrl
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    function setStatus(msg, type) {
+      statusEl.textContent = msg;
+      statusEl.className = 'status' + (type ? ' ' + type : '');
+    }
+
+    function showSelectedInfo(parsedValue) {
+      if (parsedValue && parsedValue.name) {
+        selectedInfo.textContent = '\u{1F517} Stored endpoint: ' + (parsedValue.url || parsedValue.id || '');
+        selectedInfo.classList.add('visible');
+      } else {
+        selectedInfo.classList.remove('visible');
+      }
+    }
+
+    function setDropdownDisabled(disabled) {
+      selector.disabled = disabled;
+      refreshBtn.disabled = disabled;
+    }
+
+    // ─── Populate dropdown ───────────────────────────────────────────────────
+
+    function populateSelector(formHandlers, savedValue) {
+      selector.innerHTML = '<option value="">— Select a Pardot form handler —</option>';
+
+      if (!formHandlers || formHandlers.length === 0) {
+        setStatus('No form handlers found in your Pardot account.', 'error');
+        setDropdownDisabled(isDisabled);
+        return;
+      }
+
+      let matchFound = false;
+
+      formHandlers
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+        .forEach(fh => {
+          const valueObj = JSON.stringify({
+            id:   String(fh.id),
+            name: fh.name,
+            url:  fh.url || '',
+          });
+
+          const opt = document.createElement('option');
+          opt.value       = valueObj;
+          opt.textContent = fh.name;
+
+          // Pre-select if it matches the saved value
+          if (savedValue) {
+            try {
+              const saved = JSON.parse(savedValue);
+              if (String(fh.id) === String(saved.id)) {
+                opt.selected = true;
+                matchFound   = true;
+                showSelectedInfo(saved);
+              }
+            } catch (_) {}
+          }
+
+          selector.appendChild(opt);
+        });
+
+      if (savedValue && !matchFound) {
+        // Previously saved form handler is no longer in Pardot
+        setStatus('⚠️ The previously selected form handler was not found in Pardot.', 'error');
+      } else {
+        setStatus(formHandlers.length + ' form handler' + (formHandlers.length !== 1 ? 's' : '') + ' loaded.', 'success');
+      }
+
+      setDropdownDisabled(isDisabled);
+    }
+
+    // ─── Fetch from proxy ────────────────────────────────────────────────────
+
+    async function fetchFormHandlers(savedValue) {
+      if (!proxyUrl) {
+        selector.innerHTML = '<option value="">Configuration error — see status below</option>';
+        setStatus(
+          'Error: "proxyUrl" is missing from the element\'s JSON parameters. ' +
+          'Add {"proxyUrl": "https://your-proxy.example.com/api/pardot-forms"} in the content type editor.',
+          'error'
+        );
+        return;
+      }
+
+      setStatus('Loading form handlers from Pardot…', 'loading');
+      selector.innerHTML = '<option value="">Loading…</option>';
+      setDropdownDisabled(true);
+      refreshBtn.classList.add('spinning');
+      selectedInfo.classList.remove('visible');
+
+      try {
+        const res = await fetch(proxyUrl, { method: 'GET', cache: 'no-cache' });
+
+        if (!res.ok) {
+          throw new Error('Proxy returned ' + res.status + ' ' + res.statusText + '. Check your proxy server logs.');
+        }
+
+        const data = await res.json();
+
+        // Accept several response shapes: { formHandlers: [] } or { values: [] } or []
+        const formHandlers = Array.isArray(data)
+          ? data
+          : (data.formHandlers || data.values || []);
+
+        populateSelector(formHandlers, savedValue);
+
+      } catch (err) {
+        selector.innerHTML = '<option value="">Failed to load — click 蘵 to retry</option>';
+        setStatus('Error: ' + err.message, 'error');
+        setDropdownDisabled(isDisabled);
+      } finally {
+        refreshBtn.classList.remove('spinning');
+        refreshBtn.disabled = isDisabled;
+      }
+    }
+
+    // ─── Initialise ──────────────────────────────────────────────────────────
+
+    try {
+      CustomElement.init((element, _context) => {
+        currentValue = element.value || null;
+        isDisabled   = element.disabled;
+
+        // Read proxyUrl from JSON parameters configured in the content type.
+        // Example JSON parameters: { "proxyUrl": "https://your-app.vercel.app/api/pardot-forms" }
+        if (element.config && element.config.proxyUrl) {
+          proxyUrl = element.config.proxyUrl;
+        }
+
+        // Fetch the list of form handlers from Pardot via the proxy
+        fetchFormHandlers(currentValue);
+
+        // ── On selection change ──────────────────────────────────────────
+        selector.addEventListener('change', e => {
+          const val = e.target.value;
+
+          if (!val) {
+            // Empty selection = clear the value
+            CustomElement.setValue(null);
+            currentValue = null;
+            selectedInfo.classList.remove('visible');
+            return;
+          }
+
+          try {
+            const parsed = JSON.parse(val);
+
+            // Use ValueObject so the form name is searchable in the content items list
+            CustomElement.setValue({
+              value:           val,         // full JSON object (id, name, url)
+              searchableValue: parsed.name, // plain text for search indexing
+            });
+
+            currentValue = val;
+            showSelectedInfo(parsed);
+
+          } catch (_) {
+            // Fallback: store as plain string
+            CustomElement.setValue(val);
+            currentValue = val;
+          }
+        });
+
+        // ── Disabled state (published item, version history, etc.) ───────
+        CustomElement.onDisabledChanged(disabled => {
+          isDisabled = disabled;
+          setDropdownDisabled(disabled);
+        });
+
+        // ── Set iframe height ────────────────────────────────────────────
+        // Updated dynamically if content grows (error messages can wrap)
+        CustomElement.setHeight(100);
+      });
+
+    } catch (err) {
+      // SDK failed to connect — likely running outside Kontent.ai (e.g. local dev without iframe)
+      setStatus('Running outside Kontent.ai. Using demo data for development.', 'loading');
+
+      // Demo data for local development
+      const demoForms = [
+        { id: '1001', name: 'Contact Us',         url: 'https://go.pardot.com/l/demo/contact' },
+        { id: '1002', name: 'Newsletter Signup',  url: 'https://go.pardot.com/l/demo/newsletter' },
+        { id: '1003', name: 'Request a Demo',     url: 'https://go.pardot.com/l/demo/request-demo' },
+        { id: '1004', name: 'Whitepaper Download',url: 'https://go.pardot.com/l/demo/whitepaper' },
+      ];
+
+      populateSelector(demoForms, null);
+
+      selector.addEventListener('change', e => {
+        console.log('[dev] Selected value:', e.target.value);
+      });
+    }
+
+    // ─── Refresh button ──────────────────────────────────────────────────────
+    refreshBtn.addEventListener('click', () => {
+      if (!isDisabled) fetchFormHandlers(currentValue);
+    });
+  </script>
+</body>
+</html>
