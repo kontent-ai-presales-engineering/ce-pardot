@@ -145,12 +145,24 @@
     let isDisabled    = false;
     let currentValue  = null;   // the saved JSON string, or null
     let proxyUrl      = null;   // set from element.config.proxyUrl
+    let sdkReady      = false;  // true once CustomElement.init has fired inside Kontent.ai
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    // Status text and the "selected info" box can wrap onto extra lines
+    // (e.g. long error messages), which changes the iframe's required height.
+    // Call this after any change to their content/visibility.
+    function updateHeight() {
+      if (!sdkReady) return;
+      const container = document.querySelector('.container');
+      // + 20 accounts for the body's top/bottom padding (10px each).
+      CustomElement.setHeight(container.scrollHeight + 20);
+    }
 
     function setStatus(msg, type) {
       statusEl.textContent = msg;
       statusEl.className = 'status' + (type ? ' ' + type : '');
+      updateHeight();
     }
 
     function showSelectedInfo(parsedValue) {
@@ -160,6 +172,7 @@
       } else {
         selectedInfo.classList.remove('visible');
       }
+      updateHeight();
     }
 
     function setDropdownDisabled(disabled) {
@@ -254,7 +267,7 @@
         populateSelector(formHandlers, savedValue);
 
       } catch (err) {
-        selector.innerHTML = '<option value="">Failed to load — click 蘵 to retry</option>';
+        selector.innerHTML = '<option value="">Failed to load — click ↻ to retry</option>';
         setStatus('Error: ' + err.message, 'error');
         setDropdownDisabled(isDisabled);
       } finally {
@@ -275,6 +288,8 @@
         if (element.config && element.config.proxyUrl) {
           proxyUrl = element.config.proxyUrl;
         }
+
+        sdkReady = true;
 
         // Fetch the list of form handlers from Pardot via the proxy
         fetchFormHandlers(currentValue);
@@ -317,8 +332,9 @@
         });
 
         // ── Set iframe height ────────────────────────────────────────────
-        // Updated dynamically if content grows (error messages can wrap)
-        CustomElement.setHeight(100);
+        // Kept in sync via updateHeight(), called from setStatus() and
+        // showSelectedInfo() whenever their content/visibility changes.
+        updateHeight();
       });
 
     } catch (err) {
